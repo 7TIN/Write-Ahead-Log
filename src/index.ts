@@ -1,6 +1,15 @@
 import { Hono } from "hono";
 import { error } from "node:console";
-import { open, read, readFile, readFileSync, writeFile } from "node:fs";
+import {
+  closeSync,
+  open,
+  openSync,
+  read,
+  readFile,
+  readFileSync,
+  writeFile,
+  writeFileSync,
+} from "node:fs";
 import { appendFile } from "node:fs/promises";
 // import { readFile } from "node:fs/promises";
 
@@ -18,6 +27,11 @@ const app = new Hono();
 const root = process.cwd();
 const path = `${root}/wal.log`;
 
+const database = new Map<
+  number,
+  Omit<Query, "op" | "table"> & { tx: number }
+>();
+
 app.get("/", (e) => {
   return e.json({
     status: 200,
@@ -26,92 +40,67 @@ app.get("/", (e) => {
 });
 
 app.post("/", async (e) => {
+  const body = await e.req.json().catch(() => ({}));
 
-  SimulateCrash("before wal")
-  
-  const result = await WriteData({
+  const query: Query = {
     op: "insert",
     table: "users",
-    id: 2,
-    name: "Prasad",
-    email: "prasad@gmail",
+    id: body.id ?? 1,
+    name: body.name ?? "Prasad",
+    email: body.email ?? "prasad@gmail",
+  };
+
+  SimulateCrash("before wal");
+
+  const result = await WriteData(query);
+
+  SimulateCrash("after wal");
+
+  return e.json({
+    status: 200,
+    result: result,
   });
-
-  SimulateCrash("after wal crash");
-
-  console.log(result);
-
-  if (result) {
-    return e.json({
-      status: 200,
-      result: result,
-    });
-  }
 });
 
 app.post("/sync", async (e) => {
-  await recoverWithWAL();
+  database.clear();
+  recoverWithWAL();
   return e.text("lets see");
 });
 
-const SimulateCrash = (point : string) => {
-
+const SimulateCrash = (point: string) => {
   if (Math.random() < 0.4) {
-    console.log(`Crash at ${point}`)
+    console.log(`Crash at ${point}`);
     process.exit(1);
-
   }
+};
 
-}
-
-const database = new Map();
-
-const WriteData = async ({
-  op,
-  table,
-  id,
-  name,
-  email,
-}: {
-  op: string;
-  table: string;
-  id: number;
-  name: string;
-  email: string;
-}) => {
-  readFile(path, "utf8", (err, data) => {
-    if (err?.code === "ENOENT") {
-      writeFile(path, "", () => {
-        console.log("file written");
-      });
-    }
-  });
-
+const WriteData = async (query: Query) => {
   const txId = Date.now();
-  // const txId = 1;
 
-  // const data = `{tx: ${txId}, op: "insert", table : "users", id : "1", name : "prasad", email: "prasad@gmail.com"}`;
+  const walRecord = [
+    { tx: txId, op: "BEGIN" },
+    { tx: txId, ...query },
+    { tx: txId, op: "COMMIT" },
+  ];
 
-  // const data = `{tx:${txId}, op:${op}, table:${table}, id:${id}, name:${name}, email:${email}}`;
-  const data = {
-    tx: txId,
-    op: op,
-    table: table,
-    id: id,
-    name: name,
-    email: email,
+  const recordBlock = walRecord.map((r) => JSON.stringify(r) + "\n").join("");
+
+  console.log(recordBlock);
+
+  const fd = openSync(path, "a");
+
+  writeFileSync(fd, recordBlock);
+
+  closeSync(fd);
+
+  database.set(query.id, { ...query, tx: txId });
+
+  return {
+    txId,
+    Commited: true,
+    data: query,
   };
-
-  try {
-    await appendFile(path, `{"tx":${txId},"op":"BEGIN"}` + "\n");
-    await appendFile(path, `${JSON.stringify(data)}` + "\n");
-    await appendFile(path, `{"tx":${txId},"op":"COMMIT"}` + "\n");
-  } catch (err) {
-    return;
-  }
-  database.set(txId, data);
-  // console.log(data);
-  return "file written";
 };
 
 const recoverWithWAL = async () => {
@@ -124,30 +113,34 @@ const recoverWithWAL = async () => {
     }
     let txOp = "";
 
-    const ListOfTx = data.trim().split("\n").filter(Boolean);
+    const pendingTx = new Map();
+    const listOfRecords = data.trim().split("\n").filter(Boolean);
 
-    ListOfTx.forEach((tx) => {
-      // console.log(tx);
-      const parsedTx = JSON.parse(tx);
+    for (const recordTx of listOfRecords) {
+      const record = JSON.parse(recordTx);
 
-      // console.log(parsedTx)
-      if (parsedTx.op === "BEGIN") {
-        txOp = "BEGIN";
-      } else if (
-        parsedTx.op !== "COMMIT" &&
-        parsedTx.op === "insert" &&
-        txOp === "BEGIN"
-      ) {
-        // pendingTx.push(tx);
-        database.set(parsedTx.tx, parsedTx);
+      if (record.op === "BEGIN") {
+        pendingTx.set(record.tx, null);
+      } else if (record.op === "COMMIT") {
+        const data = pendingTx.get(record.tx);
+        if (data) {
+          database.set(data.id, data);
+        }
+        pendingTx.delete(record.tx);
       } else {
-        txOp = "";
+        if (pendingTx.has(record.tx)) {
+          pendingTx.set(record.tx, record);
+        }
       }
-    });
-    // console.log(pendingTx);
-    console.log(database);
-  } catch (err) {
-    return err;
+    }
+
+    console.log("Recovered from WAL:", Object.fromEntries(database));
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      console.log("No Wal File");
+    } else {
+      console.error("Recovery failed:", err);
+    }
   }
 };
 
@@ -165,7 +158,6 @@ const recoverWithWAL = async () => {
 // const UpdateData = () => {};
 
 // const DeleteData = () => {};
-
 
 recoverWithWAL();
 Bun.serve({

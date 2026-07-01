@@ -1,4 +1,4 @@
-# Toy WAL — Write-Ahead Log from First Principles
+# WAL — Write-Ahead Log from First Principles
 
 A minimal, educational implementation of a **Write-Ahead Log (WAL)** built with **Bun**, **Hono**, and **Node.js `fs` primitives**. No database engine. No ORM. Just the core idea that keeps your data safe when the lights go out.
 
@@ -66,8 +66,8 @@ This project implements that exact mechanism — stripped down to its bones — 
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/toy-wal.git
-cd toy-wal
+git clone https://github.com/7TIN/Write-Ahead-Log
+cd wal
 
 # Install dependencies
 bun install

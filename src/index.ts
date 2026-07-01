@@ -2,13 +2,10 @@ import { Hono } from "hono";
 import { error } from "node:console";
 import {
   closeSync,
-  open,
+  fsyncSync,
   openSync,
-  read,
-  readFile,
   readFileSync,
-  writeFile,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { appendFile } from "node:fs/promises";
 // import { readFile } from "node:fs/promises";
@@ -50,9 +47,9 @@ app.post("/", async (e) => {
     email: body.email ?? "prasad@gmail",
   };
 
-  SimulateCrash("before wal");
+  // SimulateCrash("before wal");
 
-  const result = await WriteData(query);
+  const result = WriteData(query);
 
   SimulateCrash("after wal");
 
@@ -71,11 +68,11 @@ app.post("/sync", async (e) => {
 const SimulateCrash = (point: string) => {
   if (Math.random() < 0.4) {
     console.log(`Crash at ${point}`);
-    process.exit(1);
+    process.abort();
   }
 };
 
-const WriteData = async (query: Query) => {
+const WriteData = (query: Query) => {
   const txId = Date.now();
 
   const walRecord = [
@@ -86,11 +83,17 @@ const WriteData = async (query: Query) => {
 
   const recordBlock = walRecord.map((r) => JSON.stringify(r) + "\n").join("");
 
-  console.log(recordBlock);
+  // console.log(recordBlock);
 
   const fd = openSync(path, "a");
 
-  writeFileSync(fd, recordBlock);
+  // writeFileSync(fd, recordBlock);
+  writeSync(fd, recordBlock);
+  // process.abort();
+  fsyncSync(fd);
+
+  // process.abort();
+  // SimulateCrash("before flush");
 
   closeSync(fd);
 
